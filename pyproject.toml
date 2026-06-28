@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mneme"
+version = "0.2.0"
+description = "Local coding agent with human-like memory (decay, hybrid retrieval, self-reflection), MCP and skills. Backends: Ollama, OpenAI-compatible, Anthropic-compatible, DeepSeek."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+mneme = "mneme.cli.app:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.5",
+  "ruff>=0.4.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["mneme*"]
