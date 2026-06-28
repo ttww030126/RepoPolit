@@ -1,6 +1,6 @@
 """混合检索（Hybrid Retrieval）。
 
-对标 MemoryBear 的“关键词 + 语义向量”双通道融合检索，但坚持 mneme 的
+对标 MemoryBear 的“关键词 + 语义向量”双通道融合检索，但坚持 repopilot 的
 零依赖约束：这里用“特征哈希（feature hashing）+ TF 加权 + 余弦相似度”
 实现一个轻量本地语义通道，避免引入 BERT、faiss、向量数据库等重依赖。
 
@@ -19,7 +19,7 @@ import hashlib
 import math
 import re
 
-from mneme.memory.decay import compute_strength
+from .memory_decay import compute_strength
 
 DEFAULT_DIM = 256
 DEFAULT_WEIGHTS = {
@@ -73,7 +73,7 @@ def cosine(vec_a, vec_b):
 
 def _recency_norm(created_at):
     # 简单地把 ISO 时间转成 [0,1]，越新越接近 1。
-    from mneme.memory.decay import _age_days, _now
+    from .memory_decay import _age_days, _now
 
     age = _age_days(created_at, _now())
     return 1.0 / (1.0 + age)  # 0 天 -> 1，30 天 -> ~0.032

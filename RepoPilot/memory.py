@@ -10,43 +10,11 @@ from datetime import datetime
 import re
 from pathlib import Path
 
-from mneme.workspace import clip, now
+from .workspace import clip, now
 
 WORKING_FILE_LIMIT = 8
 EPISODIC_NOTE_LIMIT = 12
 FILE_SUMMARY_LIMIT = 6
-
-# --- 性能缓存层 -------------------------------------------------------------
-# 这些缓存只对“同一个磁盘状态”做记忆化，一旦底层文件发生变化（mtime/size 改变），
-# 缓存键自然失效，因此对调用方完全透明，不改变任何语义。
-#   * _ROOT_RESOLVE_CACHE：workspace_root 的 Path.resolve() 结果（避免每次 syscall）
-#   * _FRESHNESS_CACHE   ：file_freshness 的 (path,mtime,size) -> sha256
-#   * _DURABLE_SLUG_CACHE：DurableMemoryStore.topic_slugs 的 (index_path,mtime) -> slugs
-_ROOT_RESOLVE_CACHE = {}
-_FRESHNESS_CACHE = {}
-_DURABLE_SLUG_CACHE = {}
-
-
-def _resolved_root(workspace_root):
-    """带缓存的 ``Path(workspace_root).resolve()``。
-
-    normalize_memory_state 几乎被每个记忆方法调用，而它对每个 recent_file /
-    file_summary 都会触发一次 root.resolve()。把 root 的解析结果缓存下来，
-    可以把每轮 O(文件数) 次 syscall 降到 O(1) 次。
-    """
-    key = str(workspace_root)
-    cached = _ROOT_RESOLVE_CACHE.get(key)
-    if cached is None:
-        cached = Path(workspace_root).resolve()
-        _ROOT_RESOLVE_CACHE[key] = cached
-    return cached
-
-
-def reset_memory_caches():
-    """清空所有性能缓存（主要供测试隔离使用）。"""
-    _ROOT_RESOLVE_CACHE.clear()
-    _FRESHNESS_CACHE.clear()
-    _DURABLE_SLUG_CACHE.clear()
 
 DURABLE_TOPIC_DEFAULTS = {
     "project-conventions": {
@@ -95,18 +63,7 @@ class DurableMemoryStore:
         self.topics_dir = self.root / "topics"
 
     def topic_slugs(self):
-        # normalize_memory_state 每次都会调用本方法，原实现每次都要读一遍
-        # MEMORY.md。这里按 (index_path, mtime, size) 缓存，磁盘没变就直接命中。
-        try:
-            stat = self.index_path.stat()
-            key = (str(self.index_path), stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            return []
-        cached = _DURABLE_SLUG_CACHE.get(key)
-        if cached is None:
-            cached = [topic["topic"] for topic in self.load_index()]
-            _DURABLE_SLUG_CACHE[key] = cached
-        return list(cached)
+        return [topic["topic"] for topic in self.load_index()]
 
     def load_index(self):
         if not self.index_path.exists():
@@ -295,7 +252,7 @@ def resolve_workspace_path(raw_path, workspace_root=None):
     if workspace_root is None:
         return path
 
-    root = _resolved_root(workspace_root)
+    root = Path(workspace_root).resolve()
     candidate = path if path.is_absolute() else root / path
     resolved = candidate.resolve()
     try:
@@ -311,29 +268,15 @@ def canonicalize_path(raw_path, workspace_root=None):
         return Path(str(raw_path)).as_posix()
     if workspace_root is None:
         return Path(str(raw_path)).as_posix()
-    root = _resolved_root(workspace_root)
+    root = Path(workspace_root).resolve()
     return resolved.relative_to(root).as_posix()
 
 
 def file_freshness(raw_path, workspace_root=None):
     resolved = resolve_workspace_path(raw_path, workspace_root)
-    if resolved is None or not resolved.is_file():
+    if resolved is None or not resolved.exists() or not resolved.is_file():
         return None
-    # 原实现每轮都会对每个最近文件做一次完整 read_bytes + sha256。
-    # 按 (path, mtime, size) 缓存：文件内容没变就直接复用已算好的摘要。
-    try:
-        stat = resolved.stat()
-    except OSError:
-        return None
-    key = (str(resolved), stat.st_mtime_ns, stat.st_size)
-    cached = _FRESHNESS_CACHE.get(key)
-    if cached is None:
-        try:
-            cached = hashlib.sha256(resolved.read_bytes()).hexdigest()
-        except OSError:
-            return None
-        _FRESHNESS_CACHE[key] = cached
-    return cached
+    return hashlib.sha256(resolved.read_bytes()).hexdigest()
 
 
 def _tokenize(text):
@@ -475,7 +418,7 @@ def normalize_memory_state(state, workspace_root=None):
     state["task"] = working["task_summary"]
     state["files"] = list(working["recent_files"])
     state["notes"] = [note["text"] for note in episodic_notes]
-    durable_root = Path(workspace_root) / ".mneme" / "memory" if workspace_root is not None else None
+    durable_root = Path(workspace_root) / ".repopilot" / "memory" if workspace_root is not None else None
     durable_store = DurableMemoryStore(durable_root) if durable_root is not None else None
     state["durable_topics"] = durable_store.topic_slugs() if durable_store is not None else []
     return state
@@ -591,7 +534,7 @@ def retrieval_candidates(state, query, limit=3, workspace_root=None):
         ranked.append(((exact_tag_match, keyword_overlap, recency, note_index), note))
 
     if workspace_root is not None:
-        durable_store = DurableMemoryStore(Path(workspace_root) / ".mneme" / "memory")
+        durable_store = DurableMemoryStore(Path(workspace_root) / ".repopilot" / "memory")
         for note in durable_store.retrieval_candidates(query, limit=limit):
             note_tags = {tag.lower() for tag in note.get("tags", [])}
             note_tokens = _tokenize(note.get("text", "")) | _tokenize(note.get("source", "")) | note_tags
@@ -657,7 +600,7 @@ class LayeredMemory:
     def __init__(self, state=None, workspace_root=None):
         self.workspace_root = workspace_root
         self.state = normalize_memory_state(state, workspace_root)
-        self.durable_store = DurableMemoryStore(Path(workspace_root) / ".mneme" / "memory") if workspace_root is not None else None
+        self.durable_store = DurableMemoryStore(Path(workspace_root) / ".repopilot" / "memory") if workspace_root is not None else None
 
     def to_dict(self):
         self.state = normalize_memory_state(self.state, self.workspace_root)

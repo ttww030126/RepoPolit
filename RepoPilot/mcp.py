@@ -1,18 +1,18 @@
 """MCP（Model Context Protocol）stdio 客户端。
 
-让 mneme 这个本地 agent 能够把外部 MCP server（如 filesystem、git、github、
+让 repopilot 这个本地 agent 能够把外部 MCP server（如 filesystem、git、github、
 fetch、sqlite 等社区 server）作为“可申请的工具”接入控制循环，而不需要把每个
 集成都硬编码进 tools.py。
 
-实现约束（延续 mneme 的零依赖原则）：
+实现约束（延续 repopilot 的零依赖原则）：
 - 只用标准库 subprocess + json + threading；
 - 走 MCP 的 stdio 传输：按行分隔的 JSON-RPC 2.0 消息（newline-delimited）；
 - 进程生命周期、初始化握手、工具发现、工具调用都封装在 MCPClient 里。
 
 配置来源（.env）：
-    MNEME_MCP_SERVERS='{"fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}}'
+    REPOPILOT_MCP_SERVERS='{"fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}}'
 
-每个 MCP server 暴露的工具会被注册成 mneme 工具，名字形如 mcp__<server>__<tool>。
+每个 MCP server 暴露的工具会被注册成 repopilot 工具，名字形如 mcp__<server>__<tool>。
 所有 MCP 调用默认归类为 risky（需要审批），因为它们可能产生副作用。
 """
 
@@ -103,7 +103,7 @@ class MCPClient:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "mneme", "version": "0.2"},
+                "clientInfo": {"name": "repopilot", "version": "0.2"},
             },
         )
         self._notify("notifications/initialized")
@@ -119,7 +119,7 @@ class MCPClient:
 
     def call_tool(self, tool_name, arguments):
         result = self._request("tools/call", {"name": tool_name, "arguments": arguments or {}})
-        # MCP 工具结果是一个 content 数组；这里抽成纯文本给 mneme 的 runtime。
+        # MCP 工具结果是一个 content 数组；这里抽成纯文本给 repopilot 的 runtime。
         parts = []
         for item in result.get("content", []):
             if isinstance(item, dict) and item.get("type") == "text":
@@ -144,7 +144,7 @@ class MCPClient:
 
 
 class MCPManager:
-    """管理多个 MCP server，并把它们的工具翻译成 mneme 工具规格。"""
+    """管理多个 MCP server，并把它们的工具翻译成 repopilot 工具规格。"""
 
     def __init__(self, servers_config, timeout=30):
         self.clients = {}
@@ -168,18 +168,18 @@ class MCPManager:
         return started
 
     def build_tool_specs(self):
-        """返回 {mneme_tool_name: spec} 供 runtime 注册。
+        """返回 {repopilot_tool_name: spec} 供 runtime 注册。
 
         spec 的 run 是一个闭包：(agent, args) -> str。delegate-friendly。
         """
         specs = {}
         for server_name, client in self.clients.items():
             for tool in client.list_tools():
-                mneme_name = f"mcp__{server_name}__{tool['name']}"
+                repopilot_name = f"mcp__{server_name}__{tool['name']}"
                 input_schema = tool.get("inputSchema", {}) or {}
                 properties = input_schema.get("properties", {}) or {}
                 schema = {key: "any" for key in properties}
-                specs[mneme_name] = {
+                specs[repopilot_name] = {
                     "schema": schema or {"arguments": "json"},
                     "risky": True,  # 外部副作用，默认需要审批
                     "description": f"[MCP:{server_name}] {tool.get('description', tool['name'])}",
@@ -201,15 +201,15 @@ class MCPManager:
 
 
 def load_mcp_config(raw_json):
-    """从 .env 的 MNEME_MCP_SERVERS 字符串解析配置；非法或空时返回 {}。"""
+    """从 .env 的 REPOPILOT_MCP_SERVERS 字符串解析配置；非法或空时返回 {}。"""
     if not raw_json:
         return {}
     try:
         config = json.loads(raw_json)
     except json.JSONDecodeError as exc:
-        raise MCPError(f"MNEME_MCP_SERVERS is not valid JSON: {exc}") from exc
+        raise MCPError(f"REPOPILOT_MCP_SERVERS is not valid JSON: {exc}") from exc
     if not isinstance(config, dict):
-        raise MCPError("MNEME_MCP_SERVERS must be a JSON object")
+        raise MCPError("REPOPILOT_MCP_SERVERS must be a JSON object")
     for name, spec in config.items():
         if not isinstance(spec, dict) or "command" not in spec:
             raise MCPError(f"MCP server '{name}' must define a 'command'")

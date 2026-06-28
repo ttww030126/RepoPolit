@@ -4,7 +4,7 @@
 （synaptic pruning）的三段生命周期：active -> dormant -> archived。
 
 设计取向：
-- 仍然保持 mneme 的零依赖、纯标准库风格，遗忘逻辑是确定的、可解释的、可测试的；
+- 仍然保持 repopilot 的零依赖、纯标准库风格，遗忘逻辑是确定的、可解释的、可测试的；
 - 不引入 embedding，也不需要外部数据库；
 - 衰减只改变“检索优先级”，不会静默删除高价值笔记，archived 仍可恢复。
 
@@ -141,7 +141,7 @@ def forgetting_sweep(notes, now=None, config=None):
     """执行一次遗忘扫描，把笔记切分成 kept（活跃/休眠）与 archived（归档）。
 
     归档不是删除：archived 笔记会从主工作集移出、停止占用 prompt 预算，
-    但仍可由上层写入冷存储（.mneme/memory/archive.jsonl）以便日后恢复。
+    但仍可由上层写入冷存储（.repopilot/memory/archive.jsonl）以便日后恢复。
     返回 (kept, archived, report)。
     """
     now = now or _now()

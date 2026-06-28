@@ -1,6 +1,6 @@
 """命令行入口。
 
-这个模块负责把“用户怎么启动 mneme”翻译成 runtime 能理解的对象：
+这个模块负责把“用户怎么启动 repopilot”翻译成 runtime 能理解的对象：
 解析参数、挑模型后端、构建工作区快照、恢复或新建 session，
 最后进入 one-shot 或交互式循环。
 """
@@ -11,26 +11,21 @@ import shutil
 import sys
 import textwrap
 
-from mneme.config import load_project_env, provider_env
-from mneme.models import (
-    AnthropicCompatibleModelClient,
-    DeepSeekModelClient,
-    OllamaModelClient,
-    OpenAICompatibleModelClient,
-)
-from mneme.core.runtime import Mneme, SessionStore
-from mneme.workspace import WorkspaceContext, middle
+from .config import load_project_env, provider_env
+from .models import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .runtime import RepoPilot, SessionStore
+from .workspace import WorkspaceContext, middle
 
 DEFAULT_SECRET_ENV_NAMES = (
-    "MNEME_OPENAI_API_KEY",
+    "REPOPILOT_OPENAI_API_KEY",
     "OPENAI_API_KEY",
     "OPENAI_API_TOKEN",
-    "MNEME_ANTHROPIC_API_KEY",
+    "REPOPILOT_ANTHROPIC_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
-    "MNEME_DEEPSEEK_API_KEY",
+    "REPOPILOT_DEEPSEEK_API_KEY",
     "DEEPSEEK_API_KEY",
-    "MNEME_RIGHT_CODES_API_KEY",
+    "REPOPILOT_RIGHT_CODES_API_KEY",
     "RIGHT_CODES_API_KEY",
     "GITHUB_PAT",
     "GH_PAT",
@@ -42,7 +37,7 @@ WELCOME_ART = (
     "       /   ^   \\\\",
     "      /|       |\\\\",
 )
-WELCOME_NAME = "mneme"
+WELCOME_NAME = "RepoPilot"
 WELCOME_SUBTITLE = "local coding agent"
 WELCOME_STATUS = "calm shell, ready for work"
 HELP_DETAILS = textwrap.dedent(
@@ -50,6 +45,7 @@ HELP_DETAILS = textwrap.dedent(
     Commands:
     /help    Show this help message.
     /memory  Show the agent's distilled working memory.
+    /skills  Show installed skill modules.
     /session Show the path to the saved session file.
     /reset   Clear the current session history and memory.
     /exit    Exit the agent.
@@ -66,7 +62,7 @@ DEFAULT_ANTHROPIC_BASE_URL = "https://www.right.codes/claude/v1"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 LEGACY_SECRET_ENV_NAMES_VAR = "MINI_CODING_AGENT_SECRET_ENV_NAMES"
-SECRET_ENV_NAMES_VAR = "MNEME_SECRET_ENV_NAMES"
+SECRET_ENV_NAMES_VAR = "REPOPILOT_SECRET_ENV_NAMES"
 
 
 def _effective_model(args, provider):
@@ -78,17 +74,17 @@ def _effective_model(args, provider):
     if explicit_model:
         return explicit_model
     if provider == "openai":
-        model = provider_env("MNEME_OPENAI_MODEL", ("OPENAI_MODEL",))
+        model = provider_env("REPOPILOT_OPENAI_MODEL", ("OPENAI_MODEL",))
         if model:
             return model
         return DEFAULT_OPENAI_MODEL
     if provider == "anthropic":
-        model = provider_env("MNEME_ANTHROPIC_MODEL", ("ANTHROPIC_MODEL",))
+        model = provider_env("REPOPILOT_ANTHROPIC_MODEL", ("ANTHROPIC_MODEL",))
         if model:
             return model
         return DEFAULT_ANTHROPIC_MODEL
     if provider == "deepseek":
-        model = provider_env("MNEME_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",))
+        model = provider_env("REPOPILOT_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",))
         if model:
             return model
         return DEFAULT_DEEPSEEK_MODEL
@@ -110,37 +106,14 @@ def _configured_secret_names(args):
     return sorted(configured_secret_names)
 
 
-def _client_classes():
-    """通过 `mneme.cli` 包命名空间解析客户端类。
-
-    这样 `patch("mneme.cli.OllamaModelClient", Dummy)` 能在测试中真正拦截到
-    客户端构造（否则 patch 会落在 `app` 模块的局部绑定上而失效）。延迟到调用
-    时再 import 包，避免与 `mneme/cli/__init__.py` 的循环导入。
-    """
-    import mneme.cli as _cli
-
-    return (
-        _cli.OpenAICompatibleModelClient,
-        _cli.AnthropicCompatibleModelClient,
-        _cli.DeepSeekModelClient,
-        _cli.OllamaModelClient,
-    )
-
-
 def _build_model_client(args):
     provider = getattr(args, "provider", "openai")
-    (
-        OpenAICompatibleModelClient,
-        AnthropicCompatibleModelClient,
-        DeepSeekModelClient,
-        OllamaModelClient,
-    ) = _client_classes()
     # CLI 只负责把 provider 选择翻译成具体 client。
     # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
     if provider == "openai":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("MNEME_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
-        api_key = provider_env("MNEME_OPENAI_API_KEY", ("OPENAI_API_KEY",))
+        base_url = getattr(args, "base_url", None) or provider_env("REPOPILOT_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
+        api_key = provider_env("REPOPILOT_OPENAI_API_KEY", ("OPENAI_API_KEY",))
         return OpenAICompatibleModelClient(
             model=model,
             base_url=base_url,
@@ -150,10 +123,10 @@ def _build_model_client(args):
         )
     if provider == "anthropic":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("MNEME_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
+        base_url = getattr(args, "base_url", None) or provider_env("REPOPILOT_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
         api_key = provider_env(
-            "MNEME_ANTHROPIC_API_KEY",
-            ("ANTHROPIC_API_KEY", "MNEME_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "MNEME_OPENAI_API_KEY", "OPENAI_API_KEY"),
+            "REPOPILOT_ANTHROPIC_API_KEY",
+            ("ANTHROPIC_API_KEY", "REPOPILOT_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "REPOPILOT_OPENAI_API_KEY", "OPENAI_API_KEY"),
         )
         return AnthropicCompatibleModelClient(
             model=model,
@@ -164,9 +137,9 @@ def _build_model_client(args):
         )
     if provider == "deepseek":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("MNEME_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
-        api_key = provider_env("MNEME_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
-        return DeepSeekModelClient(
+        base_url = getattr(args, "base_url", None) or provider_env("REPOPILOT_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
+        api_key = provider_env("REPOPILOT_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
+        return AnthropicCompatibleModelClient(
             model=model,
             base_url=base_url,
             api_key=api_key,
@@ -231,7 +204,7 @@ def build_welcome(agent, model, host):
 
 
 def build_agent(args):
-    """根据 CLI 参数装配出一个可运行的 Mneme 实例。
+    """根据 CLI 参数装配出一个可运行的 RepoPilot 实例。
 
     为什么存在：
     命令行参数只是字符串和开关，runtime 需要的是已经装配好的对象图：
@@ -240,7 +213,7 @@ def build_agent(args):
 
     输入 / 输出：
     - 输入：`argparse` 解析后的 `args`
-    - 输出：一个新的 `Mneme`，或一个从旧 session 恢复出来的 `Mneme`
+    - 输出：一个新的 `RepoPilot`，或一个从旧 session 恢复出来的 `RepoPilot`
 
     在 agent 链路里的位置：
     它是整个程序启动链路里最靠近 runtime 的装配点。`main()` 先调它，
@@ -251,13 +224,13 @@ def build_agent(args):
     workspace = WorkspaceContext.build(args.cwd)
     load_project_env(workspace.repo_root)
     configured_secret_names = _configured_secret_names(args)
-    store = SessionStore(workspace.repo_root + "/.mneme/sessions")
+    store = SessionStore(workspace.repo_root + "/.repopilot/sessions")
     model = _build_model_client(args)
     session_id = args.resume
     if session_id == "latest":
         session_id = store.latest()
     if session_id:
-        agent = Mneme.from_session(
+        agent = RepoPilot.from_session(
             model_client=model,
             workspace=workspace,
             session_store=store,
@@ -268,7 +241,7 @@ def build_agent(args):
             secret_env_names=configured_secret_names,
         )
     else:
-        agent = Mneme(
+        agent = RepoPilot(
             model_client=model,
             workspace=workspace,
             session_store=store,
@@ -277,13 +250,10 @@ def build_agent(args):
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
         )
-    # 挂载 Skill / MCP 等增强能力（可选，失败不影响核心 agent）。
-    try:
-        from mneme.core.enhancements import attach_enhancements
+    # 装配增强能力：Skill 注册表 + MCP 工具（不含记忆反思 / 巩固）。
+    from repopilot.enhancements import attach_enhancements
 
-        agent.enhancement_summary = attach_enhancements(agent, start_mcp=not getattr(args, "no_mcp", False))
-    except Exception as exc:  # noqa: BLE001
-        agent.enhancement_summary = {"error": str(exc)}
+    attach_enhancements(agent, start_mcp=not getattr(args, "no_mcp", False))
     return agent
 
 
@@ -294,11 +264,11 @@ def build_arg_parser():
     )
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
-    parser.add_argument("--provider", choices=("ollama", "openai", "anthropic", "deepseek"), default="deepseek", help="Model backend to use.")
+    parser.add_argument("--provider", choices=("ollama", "openai", "anthropic", "deepseek"), default="openai", help="Model backend to use.")
     parser.add_argument(
         "--model",
         default=None,
-        help="Model name override. Defaults to qwen3.5:4b for Ollama, MNEME_OPENAI_MODEL for openai, MNEME_ANTHROPIC_MODEL for anthropic, and MNEME_DEEPSEEK_MODEL for deepseek when set.",
+        help="Model name override. Defaults to qwen3.5:4b for Ollama, REPOPILOT_OPENAI_MODEL for openai, REPOPILOT_ANTHROPIC_MODEL for anthropic, and REPOPILOT_DEEPSEEK_MODEL for deepseek when set.",
     )
     parser.add_argument("--host", default=DEFAULT_OLLAMA_HOST, help="Ollama server URL.")
     parser.add_argument("--base-url", default=None, help="Provider API base URL for openai, anthropic, or deepseek.")
@@ -306,7 +276,6 @@ def build_arg_parser():
     parser.add_argument("--openai-timeout", type=int, default=300, help="OpenAI-compatible request timeout in seconds.")
     parser.add_argument("--resume", default=None, help="Session id to resume or 'latest'.")
     parser.add_argument("--approval", choices=("ask", "auto", "never"), default="ask", help="Approval policy for risky tools.")
-    parser.add_argument("--no-mcp", action="store_true", help="Disable starting MCP servers from MNEME_MCP_SERVERS.")
     parser.add_argument(
         "--secret-env-name",
         dest="secret_env_names",
@@ -314,6 +283,7 @@ def build_arg_parser():
         default=[],
         help="Extra environment variable names to treat as secrets for trace/report redaction.",
     )
+    parser.add_argument("--no-mcp", action="store_true", help="Do not start MCP servers for this run.")
     parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
@@ -345,7 +315,7 @@ def main(argv=None):
         # 交互模式：每次读取一条用户输入，交给同一个 agent，
         # 因此 session history 和 working memory 会跨轮延续。
         try:
-            user_input = input("\nmneme> ").strip()
+            user_input = input("\nrepopilot> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("")
             return 0
@@ -359,12 +329,6 @@ def main(argv=None):
             continue
         if user_input == "/memory":
             print(agent.memory_text())
-            continue
-        if user_input == "/reflect":
-            from mneme.core.enhancements import reflect_agent_memory
-
-            print(reflect_agent_memory(agent))
-            agent.session_store.save(agent.session)
             continue
         if user_input == "/skills":
             registry = getattr(agent, "skill_registry", None)

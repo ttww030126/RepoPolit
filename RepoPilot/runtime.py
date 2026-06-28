@@ -1,6 +1,6 @@
 """Agent 运行时核心逻辑。
 
-Mneme 就是包在模型外面的控制循环：负责组 prompt、解析模型输出、
+RepoPilot 就是包在模型外面的控制循环：负责组 prompt、解析模型输出、
 校验并执行工具、写 trace、更新工作记忆，以及在合适的时候停下来。
 """
 
@@ -15,19 +15,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import mneme.memory as memorylib
-from mneme.core.context_manager import ContextManager
-from mneme.models import DeepSeekModelClient as _DeepSeekModelClient
-from mneme.store.run_store import RunStore
-from mneme.core.task_state import TaskState
-import mneme.tools as toolkit
-from mneme.workspace import DOC_NAMES, IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
+from . import memory as memorylib
+from .context_manager import ContextManager
+from .run_store import RunStore
+from .task_state import TaskState
+from . import tools as toolkit
+from .workspace import IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
 
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
 DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
-# 支持 cache_prefix 语义（cache_control 断点）的客户端类型。
-_CACHE_PREFIX_CLIENTS = (_DeepSeekModelClient,)
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
     "relevant_memory": True,
@@ -87,7 +84,7 @@ class SessionStore:
         return files[-1].stem if files else None
 
 
-class Mneme:
+class RepoPilot:
     def __init__(
         self,
         model_client,
@@ -107,11 +104,6 @@ class Mneme:
     ):
         self.model_client = model_client
         self.workspace = workspace
-        # 工作区事实（git 状态、项目文档等）只有在风险工具真正改动仓库后才会变化。
-        # 用一个脏标记把“每轮都重建工作区”降级为“仅在需要时重建”，
-        # 只读迭代（list_files/read_file/search）将完全跳过 ~5 次 git 子进程。
-        self._workspace_dirty = False
-        self._last_workspace_signature = None
         self.root = Path(workspace.repo_root)
         self.session_store = session_store
         self.approval_policy = approval_policy
@@ -125,7 +117,7 @@ class Mneme:
         self.feature_flags = dict(DEFAULT_FEATURE_FLAGS)
         if feature_flags:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
-        self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".mneme" / "runs")
+        self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".repopilot" / "runs")
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
             "created_at": now(),
@@ -316,11 +308,10 @@ class Mneme:
 
         tools = toolkit.build_tool_registry(self)
         # 渐进式扩展：技能工具 + MCP 工具按需挂载，不污染核心工具集。
-        # runtime 约定 tool["run"](args)，因此这里用 partial 把 agent 绑进去，
-        # 与 tools.py 里基础工具的注册方式保持一致。
+        # runtime 约定 tool["run"](args)，因此用 partial 把 agent 绑进去。
         skill_registry = getattr(self, "skill_registry", None)
         if skill_registry is not None:
-            from mneme.skills import build_skill_tools
+            from repopilot.skills import build_skill_tools
 
             for name, spec in build_skill_tools(skill_registry).items():
                 tools[name] = {**spec, "run": partial(spec["run"], self)}
@@ -331,13 +322,6 @@ class Mneme:
         return tools
 
     def tool_signature(self):
-        # tool_signature 会被 current_runtime_identity / build_prefix 在每轮反复调用，
-        # 而工具集合只有在挂载增强能力（Skill/MCP）时才变化。
-        # 用一个轻量缓存键（工具名 + 各自 id）判断是否需要重算 sort+json+sha256。
-        cache_key = tuple((name, id(self.tools[name])) for name in sorted(self.tools))
-        cached = getattr(self, "_tool_signature_cache", None)
-        if cached is not None and cached[0] == cache_key:
-            return cached[1]
         payload = []
         for name in sorted(self.tools):
             tool = self.tools[name]
@@ -349,9 +333,7 @@ class Mneme:
                     "description": tool["description"],
                 }
             )
-        signature = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-        self._tool_signature_cache = (cache_key, signature)
-        return signature
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     def build_prefix(self):
         tool_lines = []
@@ -374,7 +356,7 @@ class Mneme:
         # 它是谁、工具怎么调用、当前仓库是什么状态，都写在这里。
         text = textwrap.dedent(
             f"""\
-            You are mneme, a small local coding agent working inside a local repository.
+            You are RepoPilot, a small local coding agent working inside a local repository.
 
             Rules:
             - Use tools instead of guessing about the workspace.
@@ -421,63 +403,17 @@ class Mneme:
         self.prefix_state = prefix_state
         self.prefix = prefix_state.text
 
-    def _cheap_workspace_signature(self):
-        """对工作区做一个“无 git 子进程”的廉价指纹。
-
-        只 stat 项目文档（DOC_NAMES）以及 .git/HEAD、.git/index 的 (mtime,size)。
-        这样既能感知到智能体之外的外部改动（如外部进程改写了 README），
-        又不需要像原实现那样每轮都派生 git 子进程。
-        """
-        parts = []
-        for name in DOC_NAMES:
-            path = self.root / name
-            try:
-                stat = path.stat()
-                parts.append((name, stat.st_mtime_ns, stat.st_size))
-            except OSError:
-                parts.append((name, None, None))
-        for rel in (".git/HEAD", ".git/logs/HEAD"):
-            # 用 HEAD（分支指针）+ reflog（仅在提交/切换分支时追加）感知 git 变更。
-            # 刻意不用 .git/index——`git status` 会顺带刷新它的 mtime，
-            # 会让签名每轮自我变化、引发无谓的重建。
-            path = self.root / rel
-            try:
-                stat = path.stat()
-                parts.append((rel, stat.st_mtime_ns, stat.st_size))
-            except OSError:
-                parts.append((rel, None, None))
-        return tuple(parts)
-
     def refresh_prefix(self, force=False):
         previous_hash = getattr(getattr(self, "prefix_state", None), "hash", None)
         previous_workspace_fingerprint = getattr(getattr(self, "prefix_state", None), "workspace_fingerprint", None)
 
         # 工作区事实相对稳定，所以这里按整体刷新；
         # 只有这些事实真的变化了，才重建完整 prefix。
-        #
-        # 性能优化：WorkspaceContext.build 会派生约 5 个 git 子进程并读取项目文档。
-        # 在 agent 循环里，绝大多数迭代只跑只读工具、根本不会改动工作区，
-        # 因此用「脏标记 + 廉价指纹」共同判断是否需要真正重建：
-        #   * 脏标记：智能体自己的风险工具改动了仓库
-        #   * 廉价指纹：捕捉智能体之外的外部改动（仅 stat，不派生子进程）
-        # 二者都未触发时直接复用上一轮 self.workspace，省去全部 git 调用。
-        current_signature = self._cheap_workspace_signature()
-        need_rebuild = (
-            force
-            or self._workspace_dirty
-            or previous_workspace_fingerprint is None
-            or current_signature != self._last_workspace_signature
-        )
-        if need_rebuild:
-            refreshed_workspace = WorkspaceContext.build(self.root)
-            self._workspace_dirty = False
-            self._last_workspace_signature = current_signature
-            refreshed_workspace_fingerprint = refreshed_workspace.fingerprint()
-            workspace_changed = force or refreshed_workspace_fingerprint != previous_workspace_fingerprint
-            if workspace_changed:
-                self.workspace = refreshed_workspace
-        else:
-            workspace_changed = False
+        refreshed_workspace = WorkspaceContext.build(self.root)
+        refreshed_workspace_fingerprint = refreshed_workspace.fingerprint()
+        workspace_changed = force or refreshed_workspace_fingerprint != previous_workspace_fingerprint
+        if workspace_changed:
+            self.workspace = refreshed_workspace
 
         prefix_state = self.build_prefix() if workspace_changed or force or previous_hash is None else self.prefix_state
         prefix_changed = force or previous_hash != prefix_state.hash
@@ -650,34 +586,20 @@ class Mneme:
         return payload
 
     def capture_workspace_snapshot(self):
-        # 原实现在每次风险工具前后都遍历整个仓库并对每个文件做 read_bytes + sha256，
-        # 一次 write_file 就要把全仓库哈希两遍。这里改用 os.scandir 递归 +
-        # (st_mtime_ns, st_size) 作为变更信号：diff 只比较值是否相等，
-        # 因此把“读全文件 + 哈希”降级为一次 stat，语义不变而开销大幅下降。
         snapshot = {}
-        root = self.root
-        stack = [root]
-        while stack:
-            current = stack.pop()
+        for path in self.root.rglob("*"):
             try:
-                entries = list(os.scandir(current))
-            except OSError:
+                relative_parts = path.relative_to(self.root).parts
+            except ValueError:
                 continue
-            for entry in entries:
-                name = entry.name
-                if name in IGNORED_PATH_NAMES:
-                    continue
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                    stat = entry.stat(follow_symlinks=False)
-                    rel = Path(entry.path).relative_to(root).as_posix()
-                    snapshot[rel] = (stat.st_mtime_ns, stat.st_size)
-                except OSError:
-                    continue
+            if any(part in IGNORED_PATH_NAMES for part in relative_parts):
+                continue
+            if not path.is_file():
+                continue
+            try:
+                snapshot[path.relative_to(self.root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except Exception:
+                continue
         return snapshot
 
     @staticmethod
@@ -869,7 +791,7 @@ class Mneme:
         它是 CLI 和底层工具/模型之间的核心桥梁。CLI 收到用户输入后基本只做
         一件事：调用 `agent.ask()`。而 `ask()` 内部再去驱动 `ContextManager`
         组 prompt、`model_client.complete()` 调模型、`run_tool()` 执行动作。
-        如果新人想理解 mneme 是怎么“从一句话跑成一个 agent 流程”的，
+        如果新人想理解 repopilot 是怎么“从一句话跑成一个 agent 流程”的，
         这里就是最关键的入口。
         """
         run_started_at = time.monotonic()
@@ -969,19 +891,11 @@ class Mneme:
                 prompt_cache_key = prompt_metadata.get("prompt_cache_key")
                 prompt_cache_retention = "in_memory"
             model_started_at = time.monotonic()
-            complete_kwargs = {
-                "prompt_cache_key": prompt_cache_key,
-                "prompt_cache_retention": prompt_cache_retention,
-            }
-            # DeepSeek 客户端支持 cache_control 断点：把稳定前缀单独标记为可缓存，
-            # 多轮之间复用其 KV 缓存。prompt 总是以 self.prefix 开头（见 ContextManager
-            # 的拼接顺序），所以直接把它作为 cache_prefix 传下去即可。
-            if isinstance(self.model_client, _CACHE_PREFIX_CLIENTS):
-                complete_kwargs["cache_prefix"] = self.prefix
             raw = self.model_client.complete(
                 prompt,
                 self.max_new_tokens,
-                **complete_kwargs,
+                prompt_cache_key=prompt_cache_key,
+                prompt_cache_retention=prompt_cache_retention,
             )
             completion_metadata = dict(getattr(self.model_client, "last_completion_metadata", {}) or {})
             if completion_metadata:
@@ -1189,10 +1103,6 @@ class Mneme:
             after_snapshot = self.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = self.diff_workspace_snapshots(before_snapshot, after_snapshot)
             workspace_changed = bool(affected_paths)
-            if tool["risky"]:
-                # 风险工具可能改动工作树或 git 状态（如 git commit 不改文件但改提交记录），
-                # 因此一律置脏，让下一轮 refresh_prefix 重新构建工作区事实。
-                self._workspace_dirty = True
             tool_status = "ok"
             tool_error_code = ""
             if name == "run_shell":
@@ -1222,8 +1132,6 @@ class Mneme:
             after_snapshot = self.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = self.diff_workspace_snapshots(before_snapshot, after_snapshot)
             workspace_changed = bool(affected_paths)
-            if tool["risky"]:
-                self._workspace_dirty = True
             security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
             self._last_tool_result_metadata = {
                 "tool_status": "partial_success" if workspace_changed else "error",
@@ -1343,35 +1251,35 @@ class Mneme:
         # 1. <tool>...</tool> 里包 JSON，适合简短调用
         # 2. XML 风格属性/子标签，适合写文件这类多行内容
         if "<tool>" in raw and ("<final>" not in raw or raw.find("<tool>") < raw.find("<final>")):
-            body = Mneme.extract(raw, "tool")
+            body = RepoPilot.extract(raw, "tool")
             try:
                 payload = json.loads(body)
             except Exception:
-                return "retry", Mneme.retry_notice("model returned malformed tool JSON")
+                return "retry", RepoPilot.retry_notice("model returned malformed tool JSON")
             if not isinstance(payload, dict):
-                return "retry", Mneme.retry_notice("tool payload must be a JSON object")
+                return "retry", RepoPilot.retry_notice("tool payload must be a JSON object")
             if not str(payload.get("name", "")).strip():
-                return "retry", Mneme.retry_notice("tool payload is missing a tool name")
+                return "retry", RepoPilot.retry_notice("tool payload is missing a tool name")
             args = payload.get("args", {})
             if args is None:
                 payload["args"] = {}
             elif not isinstance(args, dict):
-                return "retry", Mneme.retry_notice()
+                return "retry", RepoPilot.retry_notice()
             return "tool", payload
         if "<tool" in raw and ("<final>" not in raw or raw.find("<tool") < raw.find("<final>")):
-            payload = Mneme.parse_xml_tool(raw)
+            payload = RepoPilot.parse_xml_tool(raw)
             if payload is not None:
                 return "tool", payload
-            return "retry", Mneme.retry_notice()
+            return "retry", RepoPilot.retry_notice()
         if "<final>" in raw:
-            final = Mneme.extract(raw, "final").strip()
+            final = RepoPilot.extract(raw, "final").strip()
             if final:
                 return "final", final
-            return "retry", Mneme.retry_notice("model returned an empty <final> answer")
+            return "retry", RepoPilot.retry_notice("model returned an empty <final> answer")
         raw = raw.strip()
         if raw:
             return "final", raw
-        return "retry", Mneme.retry_notice("model returned an empty response")
+        return "retry", RepoPilot.retry_notice("model returned an empty response")
 
     @staticmethod
     def retry_notice(problem=None):
@@ -1390,7 +1298,7 @@ class Mneme:
         match = re.search(r"<tool(?P<attrs>[^>]*)>(?P<body>.*?)</tool>", raw, re.S)
         if not match:
             return None
-        attrs = Mneme.parse_attrs(match.group("attrs"))
+        attrs = RepoPilot.parse_attrs(match.group("attrs"))
         name = str(attrs.pop("name", "")).strip()
         if not name:
             return None
@@ -1399,7 +1307,7 @@ class Mneme:
         args = dict(attrs)
         for key in ("content", "old_text", "new_text", "command", "task", "pattern", "path"):
             if f"<{key}>" in body:
-                args[key] = Mneme.extract_raw(body, key)
+                args[key] = RepoPilot.extract_raw(body, key)
 
         body_text = body.strip("\n")
         if name == "write_file" and "content" not in args and body_text:
@@ -1459,4 +1367,4 @@ class Mneme:
         return resolved
 
 
-MiniAgent = Mneme
+MiniAgent = RepoPilot

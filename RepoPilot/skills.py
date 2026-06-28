@@ -1,7 +1,7 @@
 """Skill 系统：可插拔的“专家手册”。
 
 借鉴 Claude Skills / SKILL.md 的渐进式披露（progressive disclosure）思路：
-mneme 默认 prompt 只放“技能目录”（名字 + 一句话描述）这种低成本元信息，
+repopilot 默认 prompt 只放“技能目录”（名字 + 一句话描述）这种低成本元信息，
 只有当 agent 主动 use_skill 时，才把对应技能的完整正文注入到工作记忆里。
 
 这样做的价值：
@@ -10,7 +10,7 @@ mneme 默认 prompt 只放“技能目录”（名字 + 一句话描述）这种
 - 让“这个仓库该怎么改”这种隐性知识沉淀成可版本化的 .md 文件。
 
 技能目录结构：
-    .mneme/skills/<slug>/SKILL.md
+    .repopilot/skills/<slug>/SKILL.md
 
 SKILL.md 顶部用极简 YAML-ish frontmatter 声明元信息：
     ---
@@ -59,7 +59,7 @@ class Skill:
 
 class SkillRegistry:
     def __init__(self, root):
-        # root 是 .mneme 目录（与 memory/runs 同级）
+        # root 是 .repopilot 目录（与 memory/runs 同级）
         self.skills_dir = Path(root) / SKILLS_DIRNAME
         self.skills = {}
 
@@ -106,7 +106,7 @@ class SkillRegistry:
         return hits[:limit]
 
 
-# ---- 注册成 mneme 工具 -------------------------------------------------------
+# ---- 注册成 repopilot 工具 -------------------------------------------------------
 
 LIST_SKILLS_SPEC = {
     "schema": {},
@@ -130,7 +130,7 @@ def build_skill_tools(registry):
 
     def run_list(agent, args):  # noqa: ARG001
         text = registry.catalog_text()
-        return text or "(no skills installed; create .mneme/skills/<name>/SKILL.md)"
+        return text or "(no skills installed; create .repopilot/skills/<name>/SKILL.md)"
 
     def run_use(agent, args):
         slug = str((args or {}).get("slug", "")).strip()

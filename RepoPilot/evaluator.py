@@ -8,12 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import mneme.memory as memorylib
-from mneme.models import FakeModelClient
-from mneme.core.runtime import Mneme, SessionStore
-from mneme.store.run_store import RunStore
-from mneme.core.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
-from mneme.workspace import WorkspaceContext
+from . import memory as memorylib
+from .models import FakeModelClient
+from .runtime import RepoPilot, SessionStore
+from .run_store import RunStore
+from .task_state import STOP_REASON_FINAL_ANSWER_RETURNED
+from .workspace import WorkspaceContext
 
 BENCHMARK_SCHEMA_VERSION = 1
 DEFAULT_BENCHMARK_PATH = Path("benchmarks/coding_tasks.json")
@@ -386,7 +386,7 @@ class BenchmarkEvaluator:
         self.benchmark_path = Path(benchmark_path)
         self.artifact_path = Path(artifact_path)
         self.workspace_root = Path(workspace_root) if workspace_root is not None else Path(
-            tempfile.mkdtemp(prefix="mneme-benchmark-")
+            tempfile.mkdtemp(prefix="repopilot-benchmark-")
         )
         self.model_name = model_name
         self.model_version = model_version
@@ -449,13 +449,13 @@ class BenchmarkEvaluator:
             fixture_copy_root,
             repo_root_override=fixture_copy_root,
         )
-        session_store = SessionStore(fixture_copy_root / ".mneme" / "sessions")
-        run_store = RunStore(fixture_copy_root / ".mneme" / "runs")
+        session_store = SessionStore(fixture_copy_root / ".repopilot" / "sessions")
+        run_store = RunStore(fixture_copy_root / ".repopilot" / "runs")
         if self.model_client_factory is not None:
             model_client = self.model_client_factory(task=task, workspace=workspace)
         else:
             model_client = FakeModelClient(_scripted_outputs_for_task(task))
-        agent = Mneme(
+        agent = RepoPilot(
             model_client=model_client,
             workspace=workspace,
             session_store=session_store,

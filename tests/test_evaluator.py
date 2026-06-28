@@ -4,7 +4,7 @@ from collections import Counter
 
 import pytest
 
-from mneme.evaluation.evaluator import (
+from repopilot.evaluator import (
     BenchmarkEvaluator,
     load_benchmark,
     run_harness_regression_v2,

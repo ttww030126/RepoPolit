@@ -1,7 +1,7 @@
 import os
 from unittest.mock import patch
 
-from mneme.evaluation.metrics import (
+from repopilot.metrics import (
     _provider_profile,
     run_context_ablation_v2,
     run_memory_ablation_v2,
@@ -30,9 +30,9 @@ def test_provider_profile_loads_project_env_before_reading_deepseek_config(tmp_p
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "MNEME_DEEPSEEK_API_KEY=sk-project-deepseek",
-                "MNEME_DEEPSEEK_MODEL=deepseek-v4-pro",
-                "MNEME_DEEPSEEK_API_BASE=https://api.deepseek.com/anthropic",
+                "REPOPILOT_DEEPSEEK_API_KEY=sk-project-deepseek",
+                "REPOPILOT_DEEPSEEK_MODEL=deepseek-v4-pro",
+                "REPOPILOT_DEEPSEEK_API_BASE=https://api.deepseek.com/anthropic",
             ]
         )
         + "\n",
@@ -101,7 +101,7 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
         encoding="utf-8",
     )
 
-    report_path = tmp_path / "docs" / "metrics" / "mneme-benchmark-core-report.md"
+    report_path = tmp_path / "docs" / "metrics" / "repopilot-benchmark-core-report.md"
     report_text = write_benchmark_core_report(
         report_path=report_path,
         harness_artifact_path=harness_artifact_path,

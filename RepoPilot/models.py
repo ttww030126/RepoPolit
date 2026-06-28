@@ -11,7 +11,7 @@ from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
-OPENAI_COMPATIBLE_USER_AGENT = "mneme/0.1"
+OPENAI_COMPATIBLE_USER_AGENT = "repopilot/0.1"
 
 
 class FakeModelClient:
@@ -249,7 +249,7 @@ class OpenAICompatibleModelClient:
           `self.last_completion_metadata`
 
         在 agent 链路里的位置：
-        它位于 `Mneme.ask()` 的模型调用阶段，是稳定前缀缓存复用链路真正
+        它位于 `RepoPilot.ask()` 的模型调用阶段，是稳定前缀缓存复用链路真正
         落到 provider API 的地方。
         """
         self.last_completion_metadata = {}
@@ -439,107 +439,3 @@ class AnthropicCompatibleModelClient:
         if text:
             return text
         raise RuntimeError("Anthropic-compatible error: could not extract text from response")
-
-
-def _extract_anthropic_usage(data):
-    usage = data.get("usage") or {}
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
-    return {
-        "input_tokens": usage.get("input_tokens"),
-        "output_tokens": usage.get("output_tokens"),
-        "cached_tokens": cache_read,
-        "cache_creation_tokens": cache_write,
-        "cache_hit": cache_read > 0,
-    }
-
-
-class DeepSeekModelClient(AnthropicCompatibleModelClient):
-    """DeepSeek（Anthropic 兼容接口）客户端，启用 prompt 缓存。
-
-    为什么单独做一个子类：
-    DeepSeek 的 Anthropic 兼容 /messages 接口支持 `cache_control` 断点。
-    mneme 的 prompt 由“稳定前缀（工具手册 + 工作区快照）”加“动态后缀（记忆 +
-    历史 + 当前请求）”拼成。我们把稳定前缀单独放进一个带
-    `cache_control: {"type": "ephemeral"}` 的 content block，让多轮调用之间
-    复用前缀的 KV 缓存，从而显著降低 token 成本与首 token 延迟。
-
-    向后兼容：如果 runtime 没有传 `cache_prefix`，就退化成把整段 prompt
-    当作单一文本发送，行为与父类一致。
-    """
-
-    def __init__(self, model, base_url, api_key, temperature, timeout):
-        super().__init__(model, base_url, api_key, temperature, timeout)
-        self.supports_prompt_cache = True
-
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None, cache_prefix=None):
-        self.last_completion_metadata = {}
-
-        if cache_prefix and prompt.startswith(cache_prefix):
-            dynamic = prompt[len(cache_prefix):]
-            content = [
-                {"type": "text", "text": cache_prefix, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": dynamic},
-            ]
-        else:
-            content = [{"type": "text", "text": prompt}]
-
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": content}],
-            "max_tokens": max_new_tokens,
-            "stream": False,
-        }
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
-
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        request = urllib.request.Request(
-            self.base_url + "/messages",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        attempts = 3
-        for attempt in range(attempts):
-            try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    body_text = response.read().decode("utf-8")
-                break
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                if exc.code >= 500 and attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(f"DeepSeek request failed with HTTP {exc.code}: {body}") from exc
-            except (urllib.error.URLError, RemoteDisconnected) as exc:
-                if attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(
-                    "Could not reach the DeepSeek backend.\n"
-                    f"Base URL: {self.base_url}\n"
-                    f"Model: {self.model}"
-                ) from exc
-
-        try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("DeepSeek error: backend returned non-JSON content") from exc
-        if data.get("error"):
-            raise RuntimeError(f"DeepSeek error: {data['error']}")
-
-        self.last_completion_metadata = {
-            "prompt_cache_supported": True,
-            "prompt_cache_key": prompt_cache_key,
-            "prompt_cache_retention": prompt_cache_retention,
-            **_extract_anthropic_usage(data),
-        }
-        text = _extract_anthropic_text(data)
-        if text:
-            return text
-        raise RuntimeError("DeepSeek error: could not extract text from response")

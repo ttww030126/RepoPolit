@@ -1,16 +1,15 @@
-"""新增能力的单元测试：遗忘引擎 / 混合检索 / 反思 / 技能 / MCP 配置 / DeepSeek 缓存。
+"""新增能力的单元测试：遗忘引擎 / 混合检索 / 技能 / MCP 配置。
 
 刻意只用标准库 unittest，既能被 pytest 收集，也能直接
-`python -m unittest tests.test_enhancements` 运行，匹配 mneme 的零依赖风格。
+`python -m unittest tests.test_enhancements` 运行，匹配 repopilot 的零依赖风格。
 """
 
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from mneme import memory_decay, reflection, retrieval, skills
-from mneme.mcp import MCPError, load_mcp_config
-from mneme.models import DeepSeekModelClient
+from repopilot import memory_decay, retrieval, skills
+from repopilot.mcp import MCPError, load_mcp_config
 
 
 def _iso(days_ago):
@@ -77,29 +76,6 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertIn("修", tokens)
 
 
-class ReflectionTests(unittest.TestCase):
-    def test_dedupe_merges_near_duplicates(self):
-        notes = [
-            {"text": "the parser fails on empty input", "created_at": _iso(1)},
-            {"text": "the parser fails on empty input", "created_at": _iso(0)},
-            {"text": "deployment uses docker compose", "created_at": _iso(1)},
-        ]
-        kept, merged = reflection.deduplicate(notes)
-        self.assertEqual(len(kept), 2)
-        self.assertEqual(len(merged), 1)
-
-    def test_reflect_produces_report(self):
-        notes = [
-            {"text": "fact a", "kind": "durable", "created_at": _iso(1)},
-            {"text": "fact a", "kind": "durable", "created_at": _iso(0)},
-            {"text": "stale", "kind": "process", "created_at": _iso(90), "last_access": _iso(90)},
-        ]
-        kept, archived, report = reflection.reflect(notes)
-        self.assertEqual(report["input_notes"], 3)
-        self.assertGreaterEqual(report["merged_pairs"], 1)
-        self.assertIn("Reflection report", reflection.render_report(report))
-
-
 class SkillTests(unittest.TestCase):
     def test_discover_and_load(self):
         import tempfile
@@ -147,18 +123,6 @@ class MCPConfigTests(unittest.TestCase):
 
     def test_empty_returns_empty(self):
         self.assertEqual(load_mcp_config(""), {})
-
-
-class DeepSeekCacheTests(unittest.TestCase):
-    def test_supports_prompt_cache(self):
-        client = DeepSeekModelClient(
-            model="deepseek-v4-pro",
-            base_url="https://api.deepseek.com/anthropic",
-            api_key="x",
-            temperature=0.0,
-            timeout=5,
-        )
-        self.assertTrue(client.supports_prompt_cache)
 
 
 if __name__ == "__main__":
