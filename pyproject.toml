@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mneme"
+name = "repopilot"
 version = "0.2.0"
 description = "Local coding agent with human-like memory (decay, hybrid retrieval, self-reflection), MCP and skills. Backends: Ollama, OpenAI-compatible, Anthropic-compatible, DeepSeek."
 requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
-mneme = "mneme.cli.app:main"
+repopilot = "repopilot.cli:main"
 
 [dependency-groups]
 dev = [
@@ -19,4 +19,4 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["mneme*"]
+include = ["repopilot*"]

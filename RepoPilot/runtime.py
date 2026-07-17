@@ -1366,5 +1366,3 @@ class RepoPilot:
             raise ValueError(f"path escapes workspace: {raw_path}")
         return resolved
 
-
-MiniAgent = RepoPilot

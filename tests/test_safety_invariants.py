@@ -3,8 +3,8 @@ import shlex
 import sys
 from unittest.mock import patch
 
-from repopilot import FakeModelClient, MiniAgent, SessionStore, WorkspaceContext
-from repopilot import cli as mini_cli
+from repopilot import FakeModelClient, RepoPilot, SessionStore, WorkspaceContext
+from repopilot import cli as repopilot_cli
 from repopilot.task_state import TaskState
 
 
@@ -17,7 +17,7 @@ def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".repopilot" / "sessions")
     approval_policy = kwargs.pop("approval_policy", "auto")
-    return MiniAgent(
+    return RepoPilot(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
@@ -68,7 +68,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
         "repopilot.cli.OllamaModelClient",
         DummyModelClient,
     ):
-        args = mini_cli.build_arg_parser().parse_args(
+        args = repopilot_cli.build_arg_parser().parse_args(
             [
                 "--cwd",
                 str(tmp_path),
@@ -80,7 +80,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
                 "GH_PAT",
             ]
         )
-        agent = mini_cli.build_agent(args)
+        agent = repopilot_cli.build_agent(args)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {"GITHUB_PAT", "GH_PAT"}
 
 
@@ -98,8 +98,8 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
         "repopilot.cli.OllamaModelClient",
         DummyModelClient,
     ):
-        args = mini_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
-        agent = mini_cli.build_agent(args)
+        args = repopilot_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
+        agent = repopilot_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == ["GH_PAT"]
 
 
@@ -115,8 +115,8 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text("REPOPILOT_DEEPSEEK_API_KEY=sk-project-secret\n", encoding="utf-8")
     with patch.dict(os.environ, {}, clear=True), patch("repopilot.cli.AnthropicCompatibleModelClient", DummyModelClient):
-        args = mini_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
-        agent = mini_cli.build_agent(args)
+        args = repopilot_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
+        agent = repopilot_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == ["REPOPILOT_DEEPSEEK_API_KEY"]
 
 
@@ -134,12 +134,12 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
         os.environ,
         {
             "MCA_CUSTOM_SECRET": "custom-secret-value",
-            "MINI_CODING_AGENT_SECRET_ENV_NAMES": "MCA_CUSTOM_SECRET",
+            "REPOPILOT_SECRET_ENV_NAMES": "MCA_CUSTOM_SECRET",
         },
         clear=True,
     ), patch("repopilot.cli.OllamaModelClient", DummyModelClient):
-        args = mini_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
-        agent = mini_cli.build_agent(args)
+        args = repopilot_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
+        agent = repopilot_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == ["MCA_CUSTOM_SECRET"]
 
 

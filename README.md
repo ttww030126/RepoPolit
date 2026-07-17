@@ -2,7 +2,7 @@
 
 RepoPilot 是一个运行在本地代码仓库中的命令行智能开发助手。它可以读取项目文件、检索代码、运行受控命令、写入或补丁修改文件，并在多轮会话中保存任务上下文，帮助开发者完成代码阅读、问题定位、测试修复、项目改造和工程知识沉淀。
 
-本项目当前采用**扁平模块结构**：核心代码集中在 `RepoPilot/*.py` 文件中。README 中的项目结构也按当前代码组织方式描述。
+本项目当前采用**扁平模块结构**：核心代码集中在 `repopilot/*.py` 文件中。README 中的项目结构也按当前代码组织方式描述。
 
 ---
 
@@ -115,11 +115,11 @@ RepoPilot 适合以下任务：
 
 ## 项目结构
 
-当前项目是扁平模块结构，核心 Python 文件直接位于 `RepoPilot/` 包目录下：
+当前项目是扁平模块结构，核心 Python 文件直接位于 `repopilot/` 包目录下：
 
 ```text
-RepoPilot/
-├── RepoPilot/
+repopilot/
+├── repopilot/
 │   ├── __init__.py              # 对外导出核心对象
 │   ├── __main__.py              # python -m 启动入口
 │   ├── cli.py                   # 命令行参数解析、REPL、Agent 装配
@@ -292,7 +292,7 @@ RepoPilot 的一次请求大致如下：
 
 1. **启动程序**
 
-   - 用户运行 `repopilot` 或 `python -m RepoPilot`。
+   - 用户运行 `repopilot` 或 `python -m repopilot`。
    - CLI 解析参数并加载 `.env`。
 
 2. **构建工作区上下文**
@@ -389,10 +389,10 @@ repopilot --help
 如果当前环境还没有安装命令行入口，也可以使用 module 方式启动：
 
 ```bash
-python -m RepoPilot --help
+python -m repopilot --help
 ```
 
-> 建议正式发布前确认 `pyproject.toml` 中的项目名、命令行入口和包发现规则已经统一为 RepoPilot 对应配置。
+> `pyproject.toml` 中的项目名（`repopilot`）、命令行入口（`repopilot = "repopilot.cli:main"`）和包发现规则（`include = ["repopilot*"]`）已统一为 RepoPilot 对应配置。
 
 ---
 
@@ -925,7 +925,7 @@ uv sync
 如果仍无法识别，可尝试：
 
 ```bash
-python -m RepoPilot
+python -m repopilot
 ```
 
 如果 module 方式可用但命令不可用，通常是 `pyproject.toml` 中的命令行入口还没有同步，或当前虚拟环境没有激活。

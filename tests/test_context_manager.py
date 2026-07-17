@@ -1,4 +1,4 @@
-from repopilot import FakeModelClient, MiniAgent, SessionStore, WorkspaceContext
+from repopilot import FakeModelClient, RepoPilot, SessionStore, WorkspaceContext
 from repopilot.context_manager import ContextManager
 
 
@@ -11,7 +11,7 @@ def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".repopilot" / "sessions")
     approval_policy = kwargs.pop("approval_policy", "auto")
-    return MiniAgent(
+    return RepoPilot(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
