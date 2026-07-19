@@ -13,8 +13,8 @@
 
 import os
 
-from repopilot.mcp import MCPManager, load_mcp_config
-from repopilot.skills import SkillRegistry
+from .mcp import MCPManager, load_mcp_config
+from .skills import SkillRegistry
 
 
 def attach_enhancements(agent, start_mcp=True):

@@ -73,7 +73,7 @@ class SessionStore:
 
     def save(self, session):
         path = self.path(session["id"])
-        path.write_text(json.dumps(session, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(session, indent=2, ensure_ascii=False), encoding="utf-8")
         return path
 
     def load(self, session_id):
@@ -103,6 +103,9 @@ class RepoPilot:
         feature_flags=None,
     ):
         self.model_client = model_client
+        # 进度回调：CLI 可以挂上它，用来在思考/调工具时打印进度提示。
+        # 默认 None，不影响非交互式或测试场景。
+        self.progress_callback = None
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
         self.session_store = session_store
@@ -311,7 +314,7 @@ class RepoPilot:
         # runtime 约定 tool["run"](args)，因此用 partial 把 agent 绑进去。
         skill_registry = getattr(self, "skill_registry", None)
         if skill_registry is not None:
-            from repopilot.skills import build_skill_tools
+            from .skills import build_skill_tools
 
             for name, spec in build_skill_tools(skill_registry).items():
                 tools[name] = {**spec, "run": partial(spec["run"], self)}
@@ -447,7 +450,7 @@ class RepoPilot:
 
             if item["role"] == "tool":
                 limit = 900 if recent else 180
-                lines.append(f"[tool:{item['name']}] {json.dumps(item['args'], sort_keys=True)}")
+                lines.append(f"[tool:{item['name']}] {json.dumps(item['args'], sort_keys=True, ensure_ascii=False)}")
                 lines.append(clip(item["content"], limit))
             else:
                 limit = 900 if recent else 220
@@ -583,6 +586,12 @@ class RepoPilot:
         payload["created_at"] = now()
         # trace 是运行中的逐事件时间线，适合回答“这一轮 agent 到底做了什么”。
         self.run_store.append_trace(task_state, payload)
+        # 如果 CLI 挂了进度回调，就把这条事件也推给它显示。回调失败不影响主流程。
+        if self.progress_callback is not None:
+            try:
+                self.progress_callback(event, payload)
+            except Exception:
+                pass
         return payload
 
     def capture_workspace_snapshot(self):
@@ -1224,7 +1233,7 @@ class RepoPilot:
         if self.approval_policy == "never":
             return False
         try:
-            answer = input(f"approve {name} {json.dumps(args, ensure_ascii=True)}? [y/N] ")
+            answer = input(f"approve {name} {json.dumps(args, ensure_ascii=False)}? [y/N] ")
         except EOFError:
             return False
         return answer.strip().lower() in {"y", "yes"}
@@ -1354,6 +1363,12 @@ class RepoPilot:
         self.session["memory"].clear()
         self.session["memory"].update(memorylib.default_memory_state())
         self.memory = memorylib.LayeredMemory(self.session["memory"], workspace_root=self.root)
+        # 光清 history 还不够：之前的对话上下文也存在 checkpoints / resume_state 里。
+        # 不一起清掉，reset 就名不副实（文件里仍能查到旧对话内容）。
+        self.session["checkpoints"] = {"current_id": "", "items": {}}
+        self.session["resume_state"] = {}
+        self.session["runtime_identity"] = {}
+        self.resume_state = self.evaluate_resume_state()
         self.session_store.save(self.session)
 
     def path(self, raw_path):

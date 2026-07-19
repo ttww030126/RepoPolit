@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
-repopilot = "repopilot.cli:main"
+repopilot = "RepoPilot.cli:main"
 
 [dependency-groups]
 dev = [
@@ -19,4 +19,4 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["repopilot*"]
+include = ["RepoPilot*"]

@@ -155,6 +155,69 @@ def _build_model_client(args):
     )
 
 
+class ProgressPrinter:
+    """单行原地刷新的进度提示。
+
+    始终只占终端一行：用回车符 \\r 把光标移回行首、覆盖写入当前状态，
+    因此无论触发多少次工具调用，屏幕上都只有这一行在滚动更新，不会刷屏。
+    打印到 stderr，不污染最终答案（stdout）。
+    """
+
+    SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    FIELD = 40  # 固定字段宽度：每次都写满这么多字符，保证覆盖掉上一条更长的内容。
+
+    def __init__(self, stream=None):
+        self.stream = stream or sys.stderr
+        self.i = 0
+        self.step = 0    # 当前步数，由 model_requested 更新，供 tool_executed 复用
+        self.open = False  # 当前行是否还没用换行收尾
+
+    def _frame(self):
+        ch = self.SPINNER[self.i % len(self.SPINNER)]
+        self.i += 1
+        return ch
+
+    def _write_line(self, text):
+        # 始终写满固定宽度，多余部分用空格补齐，从而擦掉上一条残留字符。
+        self.stream.write("\r" + text.ljust(self.FIELD))
+        self.stream.flush()
+        self.open = True
+
+    def __call__(self, event, payload):
+        if event == "run_started":
+            self._write_line("🤔 思考中…")
+        elif event == "model_requested":
+            self.step = int(payload.get("tool_steps", 0)) + 1
+            self._write_line(f"  {self._frame()} 第 {self.step} 步 · 正在调用模型…")
+        elif event == "tool_executed":
+            name = payload.get("name", "")
+            self._write_line(f"  {self._frame()} 第 {self.step} 步 · 执行工具 {name}…")
+        elif event == "run_finished":
+            self.finish()
+
+    def finish(self):
+        # 用换行给这一行收尾，让后续的最终答案从干净的一行开始打印。
+        if self.open:
+            self.stream.write("\r" + "✅ 完成".ljust(self.FIELD) + "\n")
+            self.stream.flush()
+            self.open = False
+
+
+def _make_progress_printer():
+    return ProgressPrinter()
+
+
+def _finish_progress(agent):
+    """收尾进度行（幂等）：让最终答案从干净的一行开始打印。"""
+    callback = getattr(agent, "progress_callback", None)
+    finish = getattr(callback, "finish", None)
+    if callable(finish):
+        try:
+            finish()
+        except Exception:
+            pass
+
+
 def build_welcome(agent, model, host):
     width = max(68, min(shutil.get_terminal_size((80, 20)).columns, 84))
     inner = width - 4
@@ -248,9 +311,11 @@ def build_agent(args):
             secret_env_names=configured_secret_names,
         )
     # 装配增强能力：Skill 注册表 + MCP 工具（不含记忆反思 / 巩固）。
-    from repopilot.enhancements import attach_enhancements
+    from .enhancements import attach_enhancements
 
     attach_enhancements(agent, start_mcp=not getattr(args, "no_mcp", False))
+    # 挂上进度提示（思考中 / 调模型 / 执行工具 / 完成）。
+    agent.progress_callback = _make_progress_printer()
     return agent
 
 
@@ -261,7 +326,7 @@ def build_arg_parser():
     )
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
-    parser.add_argument("--provider", choices=("ollama", "openai", "anthropic", "deepseek"), default="openai", help="Model backend to use.")
+    parser.add_argument("--provider", choices=("ollama", "openai", "anthropic", "deepseek"), default="deepseek", help="Model backend to use.")
     parser.add_argument(
         "--model",
         default=None,
@@ -281,8 +346,8 @@ def build_arg_parser():
         help="Extra environment variable names to treat as secrets for trace/report redaction.",
     )
     parser.add_argument("--no-mcp", action="store_true", help="Do not start MCP servers for this run.")
-    parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
-    parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
+    parser.add_argument("--max-steps", type=int, default=8, help="Maximum tool/model iterations per request.")
+    parser.add_argument("--max-new-tokens", type=int, default=2048, help="Maximum model output tokens per step.")
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
     return parser
@@ -302,10 +367,13 @@ def main(argv=None):
         if prompt:
             print()
             try:
-                print(agent.ask(prompt))
+                answer = agent.ask(prompt)
             except RuntimeError as exc:
+                _finish_progress(agent)
                 print(str(exc), file=sys.stderr)
                 return 1
+            _finish_progress(agent)
+            print(answer)
         return 0
 
     while True:
@@ -341,6 +409,10 @@ def main(argv=None):
 
         print()
         try:
-            print(agent.ask(user_input))
+            answer = agent.ask(user_input)
         except RuntimeError as exc:
+            _finish_progress(agent)
             print(str(exc), file=sys.stderr)
+            continue
+        _finish_progress(agent)
+        print(answer)
